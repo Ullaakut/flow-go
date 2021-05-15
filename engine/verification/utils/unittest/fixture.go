@@ -183,17 +183,23 @@ func CompleteExecutionReceiptFixture(t *testing.T, chunks int, chain flow.Chain,
 
 // ExecutionResultFixture is a test helper that returns an execution result for the reference block header as well as the execution receipt data
 // for that result.
-func ExecutionResultFixture(t *testing.T, chunkCount int, chain flow.Chain, refBlkHeader *flow.Header) (*flow.ExecutionResult,
-	*ExecutionReceiptData) {
+func ExecutionResultFixture(t *testing.T, chunkCount int, chain flow.Chain, refBlkHeader *flow.Header, seqNum uint64,
+	startStateCommitment flow.StateCommitment, led *completeLedger.Ledger) (*flow.ExecutionResult,
+	*ExecutionReceiptData, uint64, flow.StateCommitment) {
+
 	// setups up the first collection of block consists of three transactions
 	tx1 := testutil.DeployCounterContractTransaction(chain.ServiceAddress(), chain)
-	err := testutil.SignTransactionAsServiceAccount(tx1, 0, chain)
+	err := testutil.SignTransactionAsServiceAccount(tx1, seqNum, chain)
 	require.NoError(t, err)
+	seqNum++
+
 	tx2 := testutil.CreateCounterTransaction(chain.ServiceAddress(), chain.ServiceAddress())
-	err = testutil.SignTransactionAsServiceAccount(tx2, 1, chain)
+	err = testutil.SignTransactionAsServiceAccount(tx2, seqNum, chain)
 	require.NoError(t, err)
+	seqNum++
+
 	tx3 := testutil.CreateCounterPanicTransaction(chain.ServiceAddress(), chain.ServiceAddress())
-	err = testutil.SignTransactionAsServiceAccount(tx3, 2, chain)
+	err = testutil.SignTransactionAsServiceAccount(tx3, seqNum, chain)
 	require.NoError(t, err)
 	transactions := []*flow.TransactionBody{tx1, tx2, tx3}
 	collection := flow.Collection{Transactions: transactions}
@@ -201,7 +207,6 @@ func ExecutionResultFixture(t *testing.T, chunkCount int, chain flow.Chain, refB
 	guarantee := unittest.CollectionGuaranteeFixture(unittest.WithCollection(&collection), unittest.WithCollRef(refBlkHeader.ParentID))
 	guarantees := []*flow.CollectionGuarantee{guarantee}
 
-	metricsCollector := &metrics.NoopCollector{}
 	log := zerolog.Nop()
 
 	// setups execution outputs:
@@ -214,19 +219,17 @@ func ExecutionResultFixture(t *testing.T, chunkCount int, chain flow.Chain, refB
 
 	unittest.RunWithTempDir(t, func(dir string) {
 
-		w := &fixtures.NoopWAL{}
-
-		led, err := completeLedger.NewLedger(w, 100, metricsCollector, zerolog.Nop(), completeLedger.DefaultPathFinderVersion)
-		require.NoError(t, err)
-		defer led.Done()
-
-		startStateCommitment, err := bootstrap.NewBootstrapper(log).BootstrapLedger(
-			led,
-			unittest.ServiceAccountPublicKey,
-			chain,
-			fvm.WithInitialTokenSupply(unittest.GenesisTokenSupply),
-		)
-		require.NoError(t, err)
+		//led, err := completeLedger.NewLedger(w, 100, metricsCollector, zerolog.Nop(), completeLedger.DefaultPathFinderVersion)
+		//require.NoError(t, err)
+		//defer led.Done()
+		//
+		//startStateCommitment, err := bootstrap.NewBootstrapper(log).BootstrapLedger(
+		//	led,
+		//	unittest.ServiceAccountPublicKey,
+		//	chain,
+		//	fvm.WithInitialTokenSupply(unittest.GenesisTokenSupply),
+		//)
+		//require.NoError(t, err)
 
 		rt := fvm.NewInterpreterRuntime()
 
@@ -257,8 +260,9 @@ func ExecutionResultFixture(t *testing.T, chunkCount int, chain flow.Chain, refB
 
 		for i := 1; i < chunkCount; i++ {
 			tx := testutil.CreateCounterTransaction(chain.ServiceAddress(), chain.ServiceAddress())
-			err = testutil.SignTransactionAsServiceAccount(tx, 3+uint64(i), chain)
+			err = testutil.SignTransactionAsServiceAccount(tx, seqNum, chain)
 			require.NoError(t, err)
+			seqNum++
 
 			collection := flow.Collection{Transactions: []*flow.TransactionBody{tx}}
 			guarantee := unittest.CollectionGuaranteeFixture(unittest.WithCollection(&collection), unittest.WithCollRef(refBlkHeader.ParentID))
@@ -371,7 +375,7 @@ func ExecutionResultFixture(t *testing.T, chunkCount int, chain flow.Chain, refB
 		Collections:    collections,
 		ChunkDataPacks: chunkDataPacks,
 		SpockSecrets:   spockSecrets,
-	}
+	}, seqNum, startStateCommitment
 }
 
 // LightExecutionResultFixture returns a light mocked version of execution result with an
@@ -484,10 +488,16 @@ func CompleteExecutionReceiptChainFixture(t *testing.T, root *flow.Header, count
 	require.GreaterOrEqual(t, len(builder.executorIDs), builder.copyCount,
 		"number of executors in the tests should be greater than or equal to the number of receipts per block")
 
+	seqNumber := uint64(0)
+	startState, led := ledgerFixture(t, builder.chain)
+
 	for i := 0; i < count; i++ {
 		// Generates two blocks as parent <- R <- C where R is a reference block containing guarantees,
 		// and C is a container block containing execution receipt for R.
-		receipts, allData, head := ExecutionReceiptsFromParentBlockFixture(t, parent, builder)
+		receipts, allData, head, nextStartState, nextSeqNum := ExecutionReceiptsFromParentBlockFixture(t, parent, startState, led, seqNumber, builder)
+		seqNumber = nextSeqNum
+		startState = nextStartState
+
 		containerBlock := ContainerBlockFixture(head, receipts)
 		completeERs = append(completeERs, &CompleteExecutionReceipt{
 			ContainerBlock: containerBlock,
@@ -506,15 +516,22 @@ func CompleteExecutionReceiptChainFixture(t *testing.T, root *flow.Header, count
 // result (i.e., for the next result).
 //
 // Each result may appear in more than one receipt depending on the builder parameters.
-func ExecutionReceiptsFromParentBlockFixture(t *testing.T, parent *flow.Header, builder *CompleteExecutionReceiptBuilder) (
+func ExecutionReceiptsFromParentBlockFixture(t *testing.T,
+	parent *flow.Header,
+	startState flow.StateCommitment,
+	led *completeLedger.Ledger,
+	seqNumber uint64,
+	builder *CompleteExecutionReceiptBuilder) (
 	[]*flow.ExecutionReceipt,
-	[]*ExecutionReceiptData, *flow.Header) {
+	[]*ExecutionReceiptData, *flow.Header, flow.StateCommitment, uint64) {
 
 	allData := make([]*ExecutionReceiptData, 0, builder.resultsCount*builder.copyCount)
 	allReceipts := make([]*flow.ExecutionReceipt, 0, builder.resultsCount*builder.copyCount)
 
 	for i := 0; i < builder.resultsCount; i++ {
-		result, data := ExecutionResultFromParentBlockFixture(t, parent, builder)
+		result, data, nextSeqNumber, nextStartState := ExecutionResultFromParentBlockFixture(t, parent, builder, seqNumber, startState, led)
+		seqNumber = nextSeqNumber
+		startState = nextStartState
 
 		// makes several copies of the same result
 		for cp := 0; cp < builder.copyCount; cp++ {
@@ -528,14 +545,16 @@ func ExecutionReceiptsFromParentBlockFixture(t *testing.T, parent *flow.Header, 
 		parent = data.ReferenceBlock.Header
 	}
 
-	return allReceipts, allData, parent
+	return allReceipts, allData, parent, startState, seqNumber
 }
 
 // ExecutionResultFromParentBlockFixture is a test helper that creates a child (reference) block from the parent, as well as an execution for it.
-func ExecutionResultFromParentBlockFixture(t *testing.T, parent *flow.Header, builder *CompleteExecutionReceiptBuilder) (*flow.ExecutionResult,
-	*ExecutionReceiptData) {
+func ExecutionResultFromParentBlockFixture(t *testing.T, parent *flow.Header, builder *CompleteExecutionReceiptBuilder,
+	seqNumber uint64, startState flow.StateCommitment, led *completeLedger.Ledger) (*flow.ExecutionResult,
+	*ExecutionReceiptData, uint64, flow.StateCommitment) {
 	refBlkHeader := unittest.BlockHeaderWithParentFixture(parent)
-	return ExecutionResultFixture(t, builder.chunksCount, builder.chain, &refBlkHeader)
+
+	return ExecutionResultFixture(t, builder.chunksCount, builder.chain, &refBlkHeader, seqNumber, startState, led)
 }
 
 // ContainerBlockFixture builds and returns a block that contains input execution receipts.
@@ -545,4 +564,22 @@ func ContainerBlockFixture(parent *flow.Header, receipts []*flow.ExecutionReceip
 	containerBlock.SetPayload(unittest.PayloadFixture(unittest.WithReceipts(receipts...)))
 
 	return &containerBlock
+}
+
+func ledgerFixture(t *testing.T, chain flow.Chain) (flow.StateCommitment, *completeLedger.Ledger) {
+	w := &fixtures.NoopWAL{}
+	log := zerolog.Nop()
+	led, err := completeLedger.NewLedger(w, 100, &metrics.NoopCollector{}, zerolog.Nop(), completeLedger.DefaultPathFinderVersion)
+	require.NoError(t, err)
+	defer led.Done()
+
+	startStateCommitment, err := bootstrap.NewBootstrapper(log).BootstrapLedger(
+		led,
+		unittest.ServiceAccountPublicKey,
+		chain,
+		fvm.WithInitialTokenSupply(unittest.GenesisTokenSupply),
+	)
+	require.NoError(t, err)
+
+	return startStateCommitment, led
 }
