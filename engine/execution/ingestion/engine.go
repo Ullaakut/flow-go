@@ -16,6 +16,7 @@ import (
 	"github.com/onflow/flow-go/engine"
 	"github.com/onflow/flow-go/engine/execution"
 	"github.com/onflow/flow-go/engine/execution/computation"
+	"github.com/onflow/flow-go/engine/execution/dps/pub"
 	"github.com/onflow/flow-go/engine/execution/provider"
 	"github.com/onflow/flow-go/engine/execution/state"
 	"github.com/onflow/flow-go/engine/execution/state/delta"
@@ -64,6 +65,7 @@ type Engine struct {
 	syncDeltas         mempool.Deltas      // storing the synced state deltas
 	syncFast           bool                // sync fast allows execution node to skip fetching collection during state syncing, and rely on state syncing to catch up
 	checkStakedAtBlock func(blockID flow.Identifier) (bool, error)
+	notifyDps          chan<- pub.Notification
 }
 
 func New(
@@ -88,6 +90,7 @@ func New(
 	syncThreshold int,
 	syncFast bool,
 	checkStakedAtBlock func(blockID flow.Identifier) (bool, error),
+	notifyDps chan<- pub.Notification,
 ) (*Engine, error) {
 	log := logger.With().Str("engine", "ingestion").Logger()
 
@@ -118,6 +121,7 @@ func New(
 		syncDeltas:         syncDeltas,
 		syncFast:           syncFast,
 		checkStakedAtBlock: checkStakedAtBlock,
+		notifyDps:          notifyDps,
 	}
 
 	// move to state syncing engine
@@ -577,6 +581,9 @@ func (e *Engine) executeBlock(ctx context.Context, executableBlock *entity.Execu
 			}
 		}
 	}
+
+	// Send executed block to DPS Server for publishing.
+	pub.NotifyBlock(e.notifyDps, executableBlock.Block)
 
 	e.log.Info().
 		Hex("block_id", logging.Entity(executableBlock)).

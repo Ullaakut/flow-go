@@ -26,6 +26,7 @@ require (
 	github.com/improbable-eng/grpc-web v0.12.0
 	github.com/ipfs/go-log v1.0.4
 	github.com/jrick/bitset v1.0.0
+	github.com/klauspost/compress v1.12.2
 	github.com/libp2p/go-addr-util v0.0.2
 	github.com/libp2p/go-libp2p v0.13.0
 	github.com/libp2p/go-libp2p-core v0.8.0
@@ -54,6 +55,7 @@ require (
 	github.com/uber/jaeger-lib v2.3.0+incompatible // indirect
 	github.com/vmihailenco/msgpack v4.0.4+incompatible
 	github.com/vmihailenco/msgpack/v4 v4.3.11
+	go.nanomsg.org/mangos/v3 v3.2.1
 	go.uber.org/atomic v1.6.0
 	golang.org/x/crypto v0.0.0-20210220033148-5ea612d1eb83
 	golang.org/x/exp v0.0.0-20200224162631-6cc2880d07d6

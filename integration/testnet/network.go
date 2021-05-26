@@ -15,11 +15,13 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	dockerclient "github.com/docker/docker/client"
-	"github.com/onflow/flow-go/model/flow/order"
-	"github.com/onflow/flow-go/utils/io"
+	"github.com/docker/go-connections/nat"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/onflow/flow-go/model/flow/order"
+	"github.com/onflow/flow-go/utils/io"
 
 	"github.com/dapperlabs/testingdock"
 
@@ -403,8 +405,27 @@ func (net *FlowNetwork) AddNode(t *testing.T, bootstrapDir string, nodeConf Cont
 				fmt.Sprintf("--datadir=%s", DefaultFlowDBDir),
 				fmt.Sprintf("--loglevel=%s", nodeConf.LogLevel.String()),
 			}, nodeConf.AdditionalFlags...),
+			ExposedPorts: map[nat.Port]struct{}{
+				nat.Port("14532/tcp"): {},
+				nat.Port("14533/tcp"): {},
+			},
 		},
-		HostConfig: &container.HostConfig{},
+		HostConfig: &container.HostConfig{
+			PortBindings: nat.PortMap{
+				"14532/tcp": []nat.PortBinding{
+					{
+						HostIP: "0.0.0.0",
+						HostPort: "14532",
+					},
+				},
+				"14533/tcp": []nat.PortBinding{
+					{
+						HostIP: "0.0.0.0",
+						HostPort: "14533",
+					},
+				},
+			},
+		},
 	}
 
 	// get a temporary directory in the host. On macOS the default tmp

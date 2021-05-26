@@ -6,6 +6,7 @@ import (
 
 	"github.com/hashicorp/go-multierror"
 
+	"github.com/onflow/flow-go/engine/execution/dps/pub"
 	execState "github.com/onflow/flow-go/engine/execution/state"
 	"github.com/onflow/flow-go/fvm/state"
 	"github.com/onflow/flow-go/ledger"
@@ -14,12 +15,13 @@ import (
 )
 
 type LedgerViewCommitter struct {
-	ldg    ledger.Ledger
-	tracer module.Tracer
+	ldg       ledger.Ledger
+	tracer    module.Tracer
+	notifyDps chan<- pub.Notification
 }
 
-func NewLedgerViewCommitter(ldg ledger.Ledger, tracer module.Tracer) *LedgerViewCommitter {
-	return &LedgerViewCommitter{ldg: ldg, tracer: tracer}
+func NewLedgerViewCommitter(ldg ledger.Ledger, tracer module.Tracer, notifyDps chan<- pub.Notification) *LedgerViewCommitter {
+	return &LedgerViewCommitter{ldg: ldg, tracer: tracer, notifyDps: notifyDps}
 }
 
 func (s *LedgerViewCommitter) CommitView(view state.View, baseState flow.StateCommitment) (newCommit flow.StateCommitment, proof []byte, err error) {
@@ -40,6 +42,10 @@ func (s *LedgerViewCommitter) CommitView(view state.View, baseState flow.StateCo
 	if err2 != nil {
 		err = multierror.Append(err, err2)
 	}
+
+	// Send committed view to DPS server for publishing.
+	pub.NotifyTrieUpdate(s.notifyDps, view, ledger.RootHash(baseState))
+
 	return
 }
 

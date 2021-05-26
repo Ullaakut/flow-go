@@ -23,6 +23,9 @@ import (
 	"github.com/onflow/flow-go/engine/execution/checker"
 	"github.com/onflow/flow-go/engine/execution/computation"
 	"github.com/onflow/flow-go/engine/execution/computation/committer"
+	"github.com/onflow/flow-go/engine/execution/dps"
+	"github.com/onflow/flow-go/engine/execution/dps/pub"
+	"github.com/onflow/flow-go/engine/execution/dps/sync"
 	"github.com/onflow/flow-go/engine/execution/ingestion"
 	exeprovider "github.com/onflow/flow-go/engine/execution/provider"
 	"github.com/onflow/flow-go/engine/execution/rpc"
@@ -32,7 +35,7 @@ import (
 	"github.com/onflow/flow-go/fvm/extralog"
 	"github.com/onflow/flow-go/ledger/common/pathfinder"
 	ledger "github.com/onflow/flow-go/ledger/complete"
-	wal "github.com/onflow/flow-go/ledger/complete/wal"
+	"github.com/onflow/flow-go/ledger/complete/wal"
 	bootstrapFilenames "github.com/onflow/flow-go/model/bootstrap"
 	"github.com/onflow/flow-go/model/encodable"
 	"github.com/onflow/flow-go/model/encoding"
@@ -71,6 +74,8 @@ func main() {
 		collectionRequester         *requester.Engine
 		ingestionEng                *ingestion.Engine
 		rpcConf                     rpc.Config
+		dpsConf                     dps.Config
+		notifyDps                   chan pub.Notification
 		err                         error
 		executionState              state.ExecutionState
 		triedir                     string
@@ -98,6 +103,9 @@ func main() {
 			homedir, _ := os.UserHomeDir()
 			datadir := filepath.Join(homedir, ".flow", "execution")
 
+			flags.StringVar(&dpsConf.Host, "dps-host", "localhost", "the host the DPS server listens on")
+			flags.Uint16Var(&dpsConf.PubPort, "dps-ps-port", 14532, "the port the DPS pubsub uses")
+			flags.Uint16Var(&dpsConf.SyncPort, "dps-rr-port", 14533, "the port the DPS reqrep uses")
 			flags.StringVarP(&rpcConf.ListenAddr, "rpc-addr", "i", "localhost:9000", "the address the gRPC server listens on")
 			flags.BoolVar(&rpcConf.RpcMetricsEnabled, "rpc-metrics-enabled", false, "whether to enable the rpc metrics")
 			flags.StringVar(&triedir, "triedir", datadir, "directory to store the execution State")
@@ -225,8 +233,9 @@ func main() {
 
 			vm := fvm.NewVirtualMachine(rt)
 			vmCtx := fvm.NewContext(node.Logger, node.FvmOptions...)
+			notifyDps = make(chan pub.Notification)
 
-			committer := committer.NewLedgerViewCommitter(ledgerStorage, node.Tracer)
+			committer := committer.NewLedgerViewCommitter(ledgerStorage, node.Tracer, notifyDps)
 			manager, err := computation.New(
 				node.Logger,
 				collector,
@@ -331,6 +340,7 @@ func main() {
 				syncThreshold,
 				syncFast,
 				checkStakedAtBlock,
+				notifyDps,
 			)
 
 			// TODO: we should solve these mutual dependencies better
@@ -439,6 +449,12 @@ func main() {
 		Component("grpc server", func(node *cmd.FlowNodeBuilder) (module.ReadyDoneAware, error) {
 			rpcEng := rpc.New(node.Logger, rpcConf, ingestionEng, node.Storage.Blocks, events, results, txResults, node.RootChainID)
 			return rpcEng, nil
+		}).
+		Component("dps publication server", func(node *cmd.FlowNodeBuilder) (module.ReadyDoneAware, error) {
+			return pub.New(node.Logger, dpsConf.Host, dpsConf.PubPort, notifyDps)
+		}).
+		Component("dps synchronization server", func(node *cmd.FlowNodeBuilder) (module.ReadyDoneAware, error) {
+			return sync.New(node.Logger, dpsConf.Host, dpsConf.SyncPort, node.Storage.Blocks, triedir)
 		}).Run()
 }
 

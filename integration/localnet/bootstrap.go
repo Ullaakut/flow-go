@@ -359,12 +359,18 @@ func prepareExecutionService(container testnet.ContainerConfig, i int) Service {
 		service.Command,
 		"--triedir=/trie",
 		fmt.Sprintf("--rpc-addr=%s:%d", container.ContainerName, RPCPort),
+		fmt.Sprintf("--dps-host=%s", container.ContainerName),
 	)
 
 	service.Volumes = append(
 		service.Volumes,
 		fmt.Sprintf("%s:/trie:z", trieDir),
 	)
+
+	// Only one node should expose its ports.
+	if i == 0 {
+		service.Ports = []string{"14532:14532", "14533:14533"}
+	}
 
 	return service
 }
